@@ -1,0 +1,6 @@
+{
+  "name": "PetCare AI",
+  "description": "Sistema web dinámico para veterinarias, peluquerías caninas y tiendas de mascotas con Supabase, Google Maps y asistente inteligente Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
