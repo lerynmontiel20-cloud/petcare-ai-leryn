@@ -55,7 +55,7 @@ git push -u origin main
 1. Ingresá a [Render](https://render.com/) y seleccioná **New + → Web Service** (o **Blueprint** usando `render.yaml`).
 2. Conectá tu repositorio de GitHub `petcare-ai`.
 3. Configurá:
-   - **Build Command:** `npm install && npm run build`
+   - **Build Command:** `npm install --include=dev && npm run build`
    - **Start Command:** `npm start`
 4. Agregá las **Environment Variables** en Render:
    - `NODE_ENV` = `production`
