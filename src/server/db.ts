@@ -16,16 +16,104 @@ const LOCAL_STORE_PATH = path.join(DATA_DIR, 'petcare-store.json');
 let supabaseClient: SupabaseClient | null = null;
 let supabaseSeeded = false;
 
+let supabaseConfigWarning: string | null = null;
+
+function cleanEnvValue(raw: string | undefined): string {
+  if (!raw) return '';
+  return raw.trim().replace(/^["']|["']$/g, '').trim();
+}
+
 function getSupabaseConfig(): { url: string; key: string } | null {
-  const url = process.env.SUPABASE_URL?.trim();
+  supabaseConfigWarning = null;
+  let url = cleanEnvValue(process.env.SUPABASE_URL);
   const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-    process.env.SUPABASE_ANON_KEY?.trim();
+    cleanEnvValue(process.env.SUPABASE_SERVICE_ROLE_KEY) ||
+    cleanEnvValue(process.env.SUPABASE_ANON_KEY);
 
   if (!url || !key) {
     return null;
   }
+
+  // Ignorar placeholders comunes como MY_SUPABASE_URL o TU_URL
+  if (/^(MY_|TU_|YOUR_|PLACEHOLDER)/i.test(url) || /^(MY_|TU_|YOUR_|PLACEHOLDER)/i.test(key)) {
+    supabaseConfigWarning =
+      'SUPABASE_URL o la clave aún tienen valores de ejemplo; usando almacenamiento local temporal.';
+    return null;
+  }
+
+  // Si alguien pegó la URL del dashboard por error, convertir al endpoint API real
+  const dashboardMatch = url.match(
+    /^https?:\/\/supabase\.com\/dashboard\/project\/([a-z0-9]+)/i
+  );
+  if (dashboardMatch) {
+    url = `https://${dashboardMatch[1]}.supabase.co`;
+  } else if (/^[a-z0-9-]+\.supabase\.co(\/.*)?$/i.test(url)) {
+    url = `https://${url}`;
+  } else if (/^[a-z0-9]{16,30}$/i.test(url)) {
+    url = `https://${url}.supabase.co`;
+  }
+
+  url = url.replace(/\/+$/, '');
+
+  try {
+    const parsed = new URL(url);
+    if (
+      (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') ||
+      !parsed.hostname.includes('.')
+    ) {
+      supabaseConfigWarning =
+        'SUPABASE_URL no es una URL válida (ej. https://tu-proyecto.supabase.co); usando almacenamiento local temporal.';
+      return null;
+    }
+  } catch {
+    supabaseConfigWarning =
+      'SUPABASE_URL no tiene formato de URL válido (ej. https://tu-proyecto.supabase.co); usando almacenamiento local temporal.';
+    return null;
+  }
+
   return { url, key };
+}
+
+function formatSupabaseError(
+  context: string,
+  error: { message?: string; code?: string; details?: string; hint?: string } | null | undefined
+): string {
+  const msg = error?.message?.trim() || '';
+  const code = error?.code?.trim() || '';
+  const details = error?.details?.trim() || '';
+  const hint = error?.hint?.trim() || '';
+  const combined = `${code} ${msg} ${details}`.toLowerCase();
+
+  if (
+    code === 'PGRST205' ||
+    code === '42P01' ||
+    combined.includes('could not find the table') ||
+    combined.includes('does not exist')
+  ) {
+    return `${context}: faltan las tablas 'establishments' y 'services' en Supabase. Ejecutá el SQL en Supabase → SQL Editor.`;
+  }
+
+  if (
+    combined.includes('invalid api key') ||
+    combined.includes('jwt') ||
+    combined.includes('401') ||
+    combined.includes('unauthorized')
+  ) {
+    return `${context}: la clave SUPABASE_SERVICE_ROLE_KEY no es válida para este proyecto. Copiala de Project Settings → API Keys.`;
+  }
+
+  if (
+    combined.includes('fetch failed') ||
+    combined.includes('enotfound') ||
+    combined.includes('econnrefused')
+  ) {
+    return `${context}: no se pudo conectar con SUPABASE_URL. Verificá que la URL sea https://tu-proyecto.supabase.co y que el proyecto no esté pausado.`;
+  }
+
+  const rawParts = [code, msg, details, hint].filter(Boolean).join(' · ');
+  return rawParts
+    ? `${context}: ${rawParts}`
+    : `${context}: verificá SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY y que hayas ejecutado el script SQL.`;
 }
 
 function getSupabase(): SupabaseClient | null {
@@ -33,18 +121,69 @@ function getSupabase(): SupabaseClient | null {
   if (!config) return null;
 
   if (!supabaseClient) {
-    supabaseClient = createClient(config.url, config.key, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      },
-    });
+    try {
+      supabaseClient = createClient(config.url, config.key, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      });
+    } catch (err) {
+      supabaseConfigWarning =
+        err instanceof Error ? err.message : 'No se pudo inicializar el cliente de Supabase.';
+      return null;
+    }
   }
   return supabaseClient;
 }
 
 export function isSupabaseConfigured(): boolean {
   return getSupabaseConfig() !== null;
+}
+
+export async function checkSupabaseHealth(): Promise<{
+  configured: boolean;
+  ok: boolean;
+  detail?: string;
+}> {
+  const config = getSupabaseConfig();
+  if (!config) {
+    return {
+      configured: false,
+      ok: false,
+      detail: supabaseConfigWarning ?? 'Variables no configuradas',
+    };
+  }
+  try {
+    const client = getSupabase();
+    if (!client) {
+      return {
+        configured: false,
+        ok: false,
+        detail: supabaseConfigWarning ?? 'Cliente de Supabase no inicializado',
+      };
+    }
+    const { error } = await client.from('establishments').select('id').limit(1);
+    if (error) {
+      return {
+        configured: true,
+        ok: false,
+        detail: formatSupabaseError('Error al consultar Supabase', error),
+      };
+    }
+    return { configured: true, ok: true };
+  } catch (err) {
+    return {
+      configured: true,
+      ok: false,
+      detail:
+        err instanceof Error
+          ? formatSupabaseError('Error al conectar con Supabase', {
+              message: err.message,
+            })
+          : 'Error de red al conectar con Supabase',
+    };
+  }
 }
 
 function buildSeedRecords(): Establishment[] {
@@ -116,15 +255,17 @@ function writeLocalStore(records: Establishment[]): void {
 async function ensureSupabaseSeeded(client: SupabaseClient): Promise<void> {
   if (supabaseSeeded) return;
 
-  const { count, error } = await client
+  // Usar GET con limit(1) en lugar de head:true para recibir el detalle completo ante cualquier error HTTP
+  const { data: existingRows, error } = await client
     .from('establishments')
-    .select('id', { count: 'exact', head: true });
+    .select('id')
+    .limit(1);
 
   if (error) {
-    throw new Error(`Error al consultar Supabase: ${error.message}`);
+    throw new Error(formatSupabaseError('Error al consultar Supabase', error));
   }
 
-  if ((count ?? 0) === 0) {
+  if (!existingRows || existingRows.length === 0) {
     for (const item of SEED_ESTABLISHMENTS) {
       const { data: createdEst, error: estErr } = await client
         .from('establishments')
@@ -144,7 +285,7 @@ async function ensureSupabaseSeeded(client: SupabaseClient): Promise<void> {
 
       if (estErr || !createdEst) {
         throw new Error(
-          `Error al insertar semilla en Supabase: ${estErr?.message ?? 'sin respuesta'}`
+          formatSupabaseError('Error al insertar semilla en Supabase', estErr)
         );
       }
 
@@ -161,7 +302,9 @@ async function ensureSupabaseSeeded(client: SupabaseClient): Promise<void> {
           }))
         );
         if (svcErr) {
-          throw new Error(`Error al insertar servicios semilla: ${svcErr.message}`);
+          throw new Error(
+            formatSupabaseError('Error al insertar servicios semilla', svcErr)
+          );
         }
       }
     }

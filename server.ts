@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import {
+  checkSupabaseHealth,
   createEstablishment,
   deleteEstablishment,
   getEstablishmentById,
@@ -181,10 +182,16 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
-  app.get('/api/health', (_req: Request, res: Response) => {
+  app.get('/api/health', async (_req: Request, res: Response) => {
+    const supabaseStatus = isSupabaseConfigured()
+      ? await checkSupabaseHealth()
+      : { configured: false, ok: false };
+
     res.json({
       ok: true,
       storage: isSupabaseConfigured() ? 'supabase' : 'local',
+      supabaseOk: supabaseStatus.ok,
+      supabaseDetail: supabaseStatus.detail ?? null,
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
     });
   });
@@ -372,22 +379,52 @@ Reglas de comportamiento:
 
       const referencedMap: Record<string, Establishment> = {};
 
-      let response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents,
-        config: {
-          systemInstruction,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          tools: [
-            {
-              functionDeclarations: [
-                searchEstablishmentsTool,
-                listAllEstablishmentsTool,
-              ],
-            },
-          ],
-        },
-      });
+      const callGeminiWithRetry = async () => {
+        const attempts: Array<{ model: string; delayMs: number }> = [
+          { model: 'gemini-4-hydrogen', delayMs: 0 },
+          { model: 'gemini-4-hydrogen', delayMs: 800 },
+          { model: 'gemini-3.1-flash-lite', delayMs: 500 },
+        ];
+        let lastError: unknown;
+        for (let i = 0; i < attempts.length; i += 1) {
+          const { model, delayMs } = attempts[i];
+          if (delayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
+          try {
+            return await ai.models.generateContent({
+              model,
+              contents,
+              config: {
+                systemInstruction,
+                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+                tools: [
+                  {
+                    functionDeclarations: [
+                      searchEstablishmentsTool,
+                      listAllEstablishmentsTool,
+                    ],
+                  },
+                ],
+              },
+            });
+          } catch (err) {
+            lastError = err;
+            const msg = err instanceof Error ? err.message : String(err);
+            const isTransient =
+              msg.includes('503') ||
+              msg.includes('UNAVAILABLE') ||
+              msg.includes('429') ||
+              msg.includes('RESOURCE_EXHAUSTED');
+            if (!isTransient || i === attempts.length - 1) {
+              throw err;
+            }
+          }
+        }
+        throw lastError;
+      };
+
+      let response = await callGeminiWithRetry();
 
       let rounds = 0;
       while (response.functionCalls && response.functionCalls.length > 0 && rounds < 3) {
@@ -459,22 +496,7 @@ Reglas de comportamiento:
           parts: toolResponseParts,
         });
 
-        response = await ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents,
-          config: {
-            systemInstruction,
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            tools: [
-              {
-                functionDeclarations: [
-                  searchEstablishmentsTool,
-                  listAllEstablishmentsTool,
-                ],
-              },
-            ],
-          },
-        });
+        response = await callGeminiWithRetry();
       }
 
       const replyText =
