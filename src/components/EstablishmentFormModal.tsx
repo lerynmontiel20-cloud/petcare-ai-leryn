@@ -15,14 +15,17 @@ interface EstablishmentFormModalProps {
   open: boolean;
   mapsApiKey: string;
   editingEstablishment: Establishment | null;
+  establishmentCategories?: string[];
+  petTypeOptions?: string[];
+  serviceCategories?: string[];
   onClose: () => void;
   onSubmit: (data: EstablishmentInput, editingId?: string) => Promise<void>;
 }
 
-function emptyService(): ServiceInput {
+function emptyService(defaultCategory = 'Consulta Veterinaria'): ServiceInput {
   return {
     name: '',
-    category: 'Consulta Veterinaria',
+    category: defaultCategory,
     pet_type: 'Perros y Gatos',
     price_pyg: 90000,
     duration_minutes: 30,
@@ -34,9 +37,20 @@ export function EstablishmentFormModal({
   open,
   mapsApiKey,
   editingEstablishment,
+  establishmentCategories = [],
+  petTypeOptions = [],
+  serviceCategories = [],
   onClose,
   onSubmit,
 }: EstablishmentFormModalProps) {
+  const categoryOptions =
+    establishmentCategories.length > 0
+      ? establishmentCategories
+      : ESTABLISHMENT_CATEGORIES;
+  const availablePetTypes =
+    petTypeOptions.length > 0 ? petTypeOptions : [...PET_TYPES];
+  const availableServiceCategories =
+    serviceCategories.length > 0 ? serviceCategories : [...SERVICE_CATEGORIES];
   const [name, setName] = useState('');
   const [category, setCategory] = useState<EstablishmentCategory>('Veterinaria');
   const [address, setAddress] = useState('');
@@ -109,7 +123,10 @@ export function EstablishmentFormModal({
   };
 
   const addServiceRow = () => {
-    setServices((prev) => [...prev, emptyService()]);
+    setServices((prev) => [
+      ...prev,
+      emptyService(availableServiceCategories[0] || 'Consulta Veterinaria'),
+    ]);
   };
 
   const removeServiceRow = (index: number) => {
@@ -242,7 +259,7 @@ export function EstablishmentFormModal({
                 onChange={(e) => setCategory(e.target.value as EstablishmentCategory)}
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/20"
               >
-                {ESTABLISHMENT_CATEGORIES.map((cat) => (
+                {categoryOptions.map((cat) => (
                   <option key={cat} value={cat}>
                     {cat}
                   </option>
@@ -311,7 +328,7 @@ export function EstablishmentFormModal({
               Tipos de mascotas que atiende
             </span>
             <div className="mt-2 flex flex-wrap gap-2">
-              {PET_TYPES.map((pet) => {
+              {availablePetTypes.map((pet) => {
                 const active = petTypes.includes(pet);
                 return (
                   <button
@@ -425,7 +442,7 @@ export function EstablishmentFormModal({
                         }
                         className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
                       >
-                        {SERVICE_CATEGORIES.map((cat) => (
+                        {availableServiceCategories.map((cat) => (
                           <option key={cat} value={cat}>
                             {cat}
                           </option>

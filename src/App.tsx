@@ -6,6 +6,7 @@ import {
   Pencil,
   Phone,
   Plus,
+  RefreshCw,
   Search,
   X,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ import {
   ESTABLISHMENT_CATEGORIES,
   PET_TYPES,
   SERVICE_CATEGORIES,
+  type CatalogMetadata,
   type Establishment,
   type EstablishmentInput,
 } from './types/petcare.ts';
@@ -29,6 +31,7 @@ type ActiveView = 'catalog' | 'manage' | 'assistant';
 export default function App() {
   const [activeView, setActiveView] = useState<ActiveView>('catalog');
   const [establishments, setEstablishments] = useState<Establishment[]>([]);
+  const [catalogMeta, setCatalogMeta] = useState<CatalogMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [quotaExceeded, setQuotaExceeded] = useState(false);
@@ -74,15 +77,23 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/establishments');
-      const data = (await res.json()) as {
+      const [estRes, metaRes] = await Promise.all([
+        fetch('/api/establishments'),
+        fetch('/api/catalog-meta'),
+      ]);
+      const data = (await estRes.json()) as {
         establishments?: Establishment[];
         error?: string;
       };
-      if (!res.ok) {
+      if (!estRes.ok) {
         throw new Error(data.error || 'Error al cargar los establecimientos.');
       }
       setEstablishments(data.establishments ?? []);
+
+      if (metaRes.ok) {
+        const meta = (await metaRes.json()) as CatalogMetadata;
+        setCatalogMeta(meta);
+      }
     } catch (err) {
       setError(
         err instanceof Error
@@ -97,6 +108,38 @@ export default function App() {
   useEffect(() => {
     void fetchEstablishments();
   }, [fetchEstablishments]);
+
+  const categoryNames = useMemo(
+    () =>
+      catalogMeta?.establishmentCategories.length
+        ? catalogMeta.establishmentCategories.map((c) => c.name)
+        : [...ESTABLISHMENT_CATEGORIES],
+    [catalogMeta]
+  );
+
+  const petTypeNames = useMemo(
+    () =>
+      catalogMeta?.petTypes.length
+        ? catalogMeta.petTypes.map((p) => p.name)
+        : [...PET_TYPES],
+    [catalogMeta]
+  );
+
+  const serviceCategoryNames = useMemo(
+    () =>
+      catalogMeta?.serviceCategories.length
+        ? catalogMeta.serviceCategories.map((s) => s.name)
+        : [...SERVICE_CATEGORIES],
+    [catalogMeta]
+  );
+
+  const categoryColorMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const item of catalogMeta?.establishmentCategories ?? []) {
+      map[item.name] = item.color_hex;
+    }
+    return map;
+  }, [catalogMeta]);
 
   const filteredEstablishments = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -406,7 +449,7 @@ export default function App() {
 
               <div className="flex flex-wrap items-center gap-2">
                 <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1">
-                  {(['Todos', ...ESTABLISHMENT_CATEGORIES] as const).map((cat) => (
+                  {(['Todos', ...categoryNames] as const).map((cat) => (
                     <button
                       key={cat}
                       type="button"
@@ -429,7 +472,7 @@ export default function App() {
                   className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 focus:border-teal-700 focus:outline-none"
                 >
                   <option value="todas">Todas las mascotas</option>
-                  {PET_TYPES.map((pet) => (
+                  {petTypeNames.map((pet) => (
                     <option key={pet} value={pet}>
                       {pet}
                     </option>
@@ -443,7 +486,7 @@ export default function App() {
                   className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 focus:border-teal-700 focus:outline-none"
                 >
                   <option value="todos">Todos los servicios</option>
-                  {SERVICE_CATEGORIES.map((svc) => (
+                  {serviceCategoryNames.map((svc) => (
                     <option key={svc} value={svc}>
                       {svc}
                     </option>
@@ -464,19 +507,30 @@ export default function App() {
             </div>
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 text-xs text-slate-500">
-              <div className="tabular-nums">
-                Mostrando{' '}
-                <span className="font-semibold text-slate-800">
-                  {filteredEstablishments.length}
-                </span>{' '}
-                {filteredEstablishments.length === 1
-                  ? 'establecimiento'
-                  : 'establecimientos'}{' '}
-                <span aria-hidden="true">·</span>{' '}
-                <span className="font-semibold text-slate-800">
-                  {totalServicesCount}
-                </span>{' '}
-                {totalServicesCount === 1 ? 'servicio' : 'servicios'}
+              <div className="flex flex-wrap items-center gap-3 tabular-nums">
+                <span>
+                  Mostrando{' '}
+                  <span className="font-semibold text-slate-800">
+                    {filteredEstablishments.length}
+                  </span>{' '}
+                  {filteredEstablishments.length === 1
+                    ? 'establecimiento'
+                    : 'establecimientos'}{' '}
+                  <span aria-hidden="true">·</span>{' '}
+                  <span className="font-semibold text-slate-800">
+                    {totalServicesCount}
+                  </span>{' '}
+                  {totalServicesCount === 1 ? 'servicio' : 'servicios'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void fetchEstablishments()}
+                  disabled={loading}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 disabled:opacity-50 whitespace-nowrap"
+                >
+                  <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+                  Actualizar
+                </button>
               </div>
               <button
                 type="button"
@@ -534,7 +588,10 @@ export default function App() {
                 </div>
               ) : (
                 filteredEstablishments.map((est) => {
-                  const visuals = getCategoryVisuals(est.category);
+                  const visuals = getCategoryVisuals(
+                    est.category,
+                    categoryColorMap[est.category]
+                  );
                   const isSelected = selectedMapId === est.id;
                   const minPrice =
                     est.services.length > 0
@@ -641,6 +698,7 @@ export default function App() {
                 <PetMap
                   mapsApiKey={mapsApiKey}
                   establishments={filteredEstablishments}
+                  categories={catalogMeta?.establishmentCategories}
                   selectedId={selectedMapId}
                   onSelect={setSelectedMapId}
                   onViewDetails={(est) => setDetailTarget(est)}
@@ -663,7 +721,10 @@ export default function App() {
         )}
 
         {activeView === 'assistant' && (
-          <AssistantPanel onSelectEstablishmentFromAI={handleSelectFromAI} />
+          <AssistantPanel
+            suggestedQueries={catalogMeta?.suggestedQueries}
+            onSelectEstablishmentFromAI={handleSelectFromAI}
+          />
         )}
       </main>
 
@@ -690,6 +751,9 @@ export default function App() {
         open={formOpen}
         mapsApiKey={mapsApiKey}
         editingEstablishment={editingTarget}
+        establishmentCategories={categoryNames}
+        petTypeOptions={petTypeNames}
+        serviceCategories={serviceCategoryNames}
         onClose={() => setFormOpen(false)}
         onSubmit={handleSaveEstablishment}
       />

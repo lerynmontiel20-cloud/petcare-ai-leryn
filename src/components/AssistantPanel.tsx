@@ -1,32 +1,73 @@
 import { ArrowUpRight, Bot, MapPin, RotateCcw, Send, User } from 'lucide-react';
-import React, { useRef, useState } from 'react';
-import type { ChatTurn } from '../types/petcare.ts';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  DEFAULT_SUGGESTED_QUERIES,
+  type ChatTurn,
+  type SuggestedQueryItem,
+} from '../types/petcare.ts';
 import { SafeMarkdown } from './SafeMarkdown.tsx';
 
-const SUGGESTED_QUERIES = [
-  '¿Qué cuidados básicos necesita un cachorro?',
-  '¿Qué establecimientos ofrecen peluquería canina?',
-  '¿Qué accesorios necesita un gato?',
-];
+const WELCOME_TURN: ChatTurn = {
+  role: 'assistant',
+  content:
+    'Hola, soy **PetCare AI**. Puedo responder dudas generales sobre el cuidado de perros y gatos y consultar en tiempo real los establecimientos, servicios, horarios y precios registrados en nuestra base de datos.\n\n*Recordá que mis respuestas son de orientación general y no sustituyen la consulta con un médico veterinario.*',
+};
+
+const SESSION_STORAGE_KEY = 'petcare_chat_session_id';
+
+function getOrCreateSessionId(): string {
+  try {
+    const existing = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (existing && existing.trim()) return existing.trim();
+    const created =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `session-${Date.now()}`;
+    window.localStorage.setItem(SESSION_STORAGE_KEY, created);
+    return created;
+  } catch {
+    return 'default';
+  }
+}
 
 interface AssistantPanelProps {
+  suggestedQueries?: SuggestedQueryItem[];
   onSelectEstablishmentFromAI: (id: string) => void;
 }
 
 export function AssistantPanel({
+  suggestedQueries = [],
   onSelectEstablishmentFromAI,
 }: AssistantPanelProps) {
-  const [messages, setMessages] = useState<ChatTurn[]>([
-    {
-      role: 'assistant',
-      content:
-        'Hola, soy **PetCare AI**. Puedo responder dudas generales sobre el cuidado de perros y gatos y consultar en tiempo real los establecimientos, servicios, horarios y precios registrados en nuestra base de datos.\n\n*Recordá que mis respuestas son de orientación general y no sustituyen la consulta con un médico veterinario.*',
-    },
-  ]);
+  const [sessionId, setSessionId] = useState<string>(() => getOrCreateSessionId());
+  const [messages, setMessages] = useState<ChatTurn[]>([WELCOME_TURN]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  const activeQueries =
+    suggestedQueries.length > 0
+      ? suggestedQueries.map((q) => q.question)
+      : [...DEFAULT_SUGGESTED_QUERIES];
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/chat/history?sessionId=${encodeURIComponent(sessionId)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { messages?: ChatTurn[] } | null) => {
+        if (cancelled) return;
+        if (data?.messages && data.messages.length > 0) {
+          setMessages([WELCOME_TURN, ...data.messages]);
+        }
+      })
+      .catch(() => {
+        // Ignorar: mantiene el mensaje de bienvenida si no hay historial previo
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   const sendMessage = async (textToSend: string) => {
     const trimmed = textToSend.trim();
@@ -48,6 +89,7 @@ export function AssistantPanel({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          sessionId,
           message: trimmed,
           history: messages.map((m) => ({ role: m.role, content: m.content })),
         }),
@@ -94,6 +136,16 @@ export function AssistantPanel({
 
   const handleReset = () => {
     setError(null);
+    const nextId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `session-${Date.now()}`;
+    try {
+      window.localStorage.setItem(SESSION_STORAGE_KEY, nextId);
+    } catch {
+      // Ignorado
+    }
+    setSessionId(nextId);
     setMessages([
       {
         role: 'assistant',
@@ -134,7 +186,7 @@ export function AssistantPanel({
           <span className="text-xs font-medium text-slate-500">
             Consultas sugeridas:
           </span>
-          {SUGGESTED_QUERIES.map((q) => (
+          {activeQueries.map((q) => (
             <button
               key={q}
               type="button"

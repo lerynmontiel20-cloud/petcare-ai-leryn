@@ -10,13 +10,17 @@ import {
 } from '@vis.gl/react-google-maps';
 import { Crosshair, ExternalLink, MapPin, Phone, Clock } from 'lucide-react';
 import { useCallback, useEffect } from 'react';
-import type { Establishment } from '../types/petcare.ts';
+import type {
+  Establishment,
+  EstablishmentCategoryItem,
+} from '../types/petcare.ts';
 import { formatPyg, getCategoryVisuals } from '../utils/format.ts';
 
 const ASUNCION_CENTER = { lat: -25.2886, lng: -57.6054 };
 
 interface EstablishmentMarkerProps {
   establishment: Establishment;
+  colorHex?: string;
   isSelected: boolean;
   onSelect: (id: string) => void;
   onCloseInfo: () => void;
@@ -25,13 +29,14 @@ interface EstablishmentMarkerProps {
 
 function EstablishmentMarker({
   establishment,
+  colorHex,
   isSelected,
   onSelect,
   onCloseInfo,
   onViewDetails,
 }: EstablishmentMarkerProps) {
   const [markerRef, marker] = useAdvancedMarkerRef();
-  const visuals = getCategoryVisuals(establishment.category);
+  const visuals = getCategoryVisuals(establishment.category, colorHex);
 
   const handleMarkerClick = useCallback(() => {
     onSelect(establishment.id);
@@ -153,6 +158,7 @@ function MapViewportSync({
 interface PetMapProps {
   mapsApiKey: string;
   establishments: Establishment[];
+  categories?: EstablishmentCategoryItem[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onViewDetails: (establishment: Establishment) => void;
@@ -161,10 +167,15 @@ interface PetMapProps {
 export function PetMap({
   mapsApiKey,
   establishments,
+  categories = [],
   selectedId,
   onSelect,
   onViewDetails,
 }: PetMapProps) {
+  const categoryColors: Record<string, string> = {};
+  for (const cat of categories) {
+    categoryColors[cat.name] = cat.color_hex;
+  }
   const apiStatus = useApiLoadingStatus();
   const mainMap = useMap('petcare-main-map');
 
@@ -252,6 +263,7 @@ export function PetMap({
           <EstablishmentMarker
             key={est.id}
             establishment={est}
+            colorHex={categoryColors[est.category]}
             isSelected={selectedId === est.id}
             onSelect={(id) => onSelect(id)}
             onCloseInfo={() => onSelect(null)}
@@ -262,18 +274,23 @@ export function PetMap({
 
       <div className="pointer-events-none absolute top-3 left-3 right-3 flex items-start justify-between gap-2">
         <div className="pointer-events-auto flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white/95 px-3 py-1.5 text-xs text-slate-700 shadow-sm backdrop-blur-sm">
-          <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-            <span className="h-2.5 w-2.5 rounded-full bg-teal-700" aria-hidden="true" />
-            Veterinaria
-          </span>
-          <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-            <span className="h-2.5 w-2.5 rounded-full bg-amber-600" aria-hidden="true" />
-            Peluquería Canina
-          </span>
-          <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-            <span className="h-2.5 w-2.5 rounded-full bg-indigo-700" aria-hidden="true" />
-            Tienda de Mascotas
-          </span>
+          {(categories.length > 0
+            ? categories
+            : [
+                { id: 'c1', name: 'Veterinaria', color_hex: '#0F766E' },
+                { id: 'c2', name: 'Peluquería Canina', color_hex: '#B45309' },
+                { id: 'c3', name: 'Tienda de Mascotas', color_hex: '#4338CA' },
+              ]
+          ).map((cat) => (
+            <span key={cat.id} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+              <span
+                className="h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: cat.color_hex }}
+                aria-hidden="true"
+              />
+              {cat.name}
+            </span>
+          ))}
         </div>
 
         <button

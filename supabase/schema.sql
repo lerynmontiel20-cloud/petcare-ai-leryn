@@ -1,12 +1,42 @@
--- PetCare AI - Esquema PostgreSQL para Supabase
--- Ejecutá este script completo en el SQL Editor de tu proyecto Supabase.
+-- PetCare AI - Esquema completo PostgreSQL para Supabase
+-- IMPORTANTE: Ejecutá este script en Supabase -> SQL Editor (no en Logs Explorer).
+-- Es seguro ejecutarlo aunque ya hayas creado establishments y services antes.
 
 create extension if not exists "pgcrypto";
 
+-- 1. Categorías de establecimientos (Veterinaria, Peluquería Canina, Tienda de Mascotas, etc.)
+create table if not exists public.establishment_categories (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  description text not null default '',
+  color_hex text not null default '#0F766E',
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+-- 2. Tipos de mascotas (Perros, Gatos, Pequeños Animales, Aves y Roedores, etc.)
+create table if not exists public.pet_types (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  description text not null default '',
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+-- 3. Rubros / Categorías de servicios (Vacunación, Peluquería Canina, Accesorios, etc.)
+create table if not exists public.service_categories (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  description text not null default '',
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+-- 4. Establecimientos registrados en el catálogo y mapa
 create table if not exists public.establishments (
   id uuid primary key default gen_random_uuid(),
   name text not null,
-  category text not null check (category in ('Veterinaria', 'Peluquería Canina', 'Tienda de Mascotas')),
+  category text not null,
   address text not null,
   phone text not null,
   hours text not null,
@@ -18,6 +48,10 @@ create table if not exists public.establishments (
   updated_at timestamptz not null default now()
 );
 
+alter table public.establishments
+  drop constraint if exists establishments_category_check;
+
+-- 5. Servicios y precios en guaraníes ofrecidos por cada establecimiento
 create table if not exists public.services (
   id uuid primary key default gen_random_uuid(),
   establishment_id uuid not null references public.establishments(id) on delete cascade,
@@ -30,10 +64,33 @@ create table if not exists public.services (
   created_at timestamptz not null default now()
 );
 
+-- 6. Consultas sugeridas del Asistente Inteligente PetCare AI
+create table if not exists public.suggested_queries (
+  id uuid primary key default gen_random_uuid(),
+  question text not null unique,
+  category text not null default 'General',
+  sort_order integer not null default 0,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+-- 7. Historial de conversaciones y consultas al Asistente IA
+create table if not exists public.chat_messages (
+  id uuid primary key default gen_random_uuid(),
+  session_id text not null default 'default',
+  role text not null check (role in ('user', 'assistant')),
+  content text not null,
+  referenced_establishments jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+-- Índices para consultas rápidas
 create index if not exists idx_establishments_category on public.establishments(category);
 create index if not exists idx_services_establishment_id on public.services(establishment_id);
 create index if not exists idx_services_category on public.services(category);
+create index if not exists idx_chat_messages_session on public.chat_messages(session_id, created_at);
 
+-- Trigger de actualización automática de updated_at
 create or replace function public.set_updated_at()
 returns trigger as $$
 begin
@@ -48,31 +105,94 @@ before update on public.establishments
 for each row
 execute function public.set_updated_at();
 
+-- Habilitar Row Level Security (RLS) y políticas en todas las tablas
+alter table public.establishment_categories enable row level security;
+alter table public.pet_types enable row level security;
+alter table public.service_categories enable row level security;
 alter table public.establishments enable row level security;
 alter table public.services enable row level security;
+alter table public.suggested_queries enable row level security;
+alter table public.chat_messages enable row level security;
 
--- Políticas de lectura y escritura para uso con clave pública o de servicio en servidor
+drop policy if exists "Lectura publica de categorias" on public.establishment_categories;
+create policy "Lectura publica de categorias"
+  on public.establishment_categories for select using (true);
+drop policy if exists "Escritura de categorias" on public.establishment_categories;
+create policy "Escritura de categorias"
+  on public.establishment_categories for all using (true) with check (true);
+
+drop policy if exists "Lectura publica de tipos de mascotas" on public.pet_types;
+create policy "Lectura publica de tipos de mascotas"
+  on public.pet_types for select using (true);
+drop policy if exists "Escritura de tipos de mascotas" on public.pet_types;
+create policy "Escritura de tipos de mascotas"
+  on public.pet_types for all using (true) with check (true);
+
+drop policy if exists "Lectura publica de rubros de servicios" on public.service_categories;
+create policy "Lectura publica de rubros de servicios"
+  on public.service_categories for select using (true);
+drop policy if exists "Escritura de rubros de servicios" on public.service_categories;
+create policy "Escritura de rubros de servicios"
+  on public.service_categories for all using (true) with check (true);
+
 drop policy if exists "Lectura publica de establecimientos" on public.establishments;
 create policy "Lectura publica de establecimientos"
-  on public.establishments for select
-  using (true);
-
+  on public.establishments for select using (true);
 drop policy if exists "Escritura de establecimientos" on public.establishments;
 create policy "Escritura de establecimientos"
-  on public.establishments for all
-  using (true)
-  with check (true);
+  on public.establishments for all using (true) with check (true);
 
 drop policy if exists "Lectura publica de servicios" on public.services;
 create policy "Lectura publica de servicios"
-  on public.services for select
-  using (true);
-
+  on public.services for select using (true);
 drop policy if exists "Escritura de servicios" on public.services;
 create policy "Escritura de servicios"
-  on public.services for all
-  using (true)
-  with check (true);
+  on public.services for all using (true) with check (true);
+
+drop policy if exists "Lectura publica de consultas sugeridas" on public.suggested_queries;
+create policy "Lectura publica de consultas sugeridas"
+  on public.suggested_queries for select using (true);
+drop policy if exists "Escritura de consultas sugeridas" on public.suggested_queries;
+create policy "Escritura de consultas sugeridas"
+  on public.suggested_queries for all using (true) with check (true);
+
+drop policy if exists "Lectura publica de mensajes del asistente" on public.chat_messages;
+create policy "Lectura publica de mensajes del asistente"
+  on public.chat_messages for select using (true);
+drop policy if exists "Escritura de mensajes del asistente" on public.chat_messages;
+create policy "Escritura de mensajes del asistente"
+  on public.chat_messages for all using (true) with check (true);
+
+-- Datos iniciales de catálogos de la página web
+insert into public.establishment_categories (name, description, color_hex, sort_order) values
+  ('Veterinaria', 'Clínicas y hospitales veterinarios con atención médica y urgencias.', '#0F766E', 1),
+  ('Peluquería Canina', 'Estética, baño terapéutico, corte e higiene para mascotas.', '#B45309', 2),
+  ('Tienda de Mascotas', 'Pet shops de alimentos balanceados, accesorios y equipamiento.', '#4338CA', 3)
+on conflict (name) do nothing;
+
+insert into public.pet_types (name, description, sort_order) values
+  ('Perros', 'Cachorros, adultos y razas grandes o pequeñas.', 1),
+  ('Gatos', 'Felinos domésticos de todas las edades.', 2),
+  ('Pequeños Animales', 'Conejos, cobayos y otras mascotas pequeñas.', 3),
+  ('Aves y Roedores', 'Aves ornamentales, hámsters y roedores domésticos.', 4)
+on conflict (name) do nothing;
+
+insert into public.service_categories (name, description, sort_order) values
+  ('Consulta Veterinaria', 'Evaluación clínica general, control de peso y carnet sanitario.', 1),
+  ('Vacunación', 'Planes de vacunación para cachorros, refuerzos y desparasitación.', 2),
+  ('Urgencias', 'Atención médica inmediata y estabilización 24 horas.', 3),
+  ('Diagnóstico', 'Ecografías, laboratorio y análisis clínicos veterinarios.', 4),
+  ('Peluquería Canina', 'Baños terapéuticos, cortes de raza y spa canino.', 5),
+  ('Peluquería Felina', 'Cepillado y deslanado suave para gatos.', 6),
+  ('Higiene', 'Corte de uñas, limpieza de oídos y cuidados básicos.', 7),
+  ('Accesorios y Alimentos', 'Alimentos balanceados, areneros, rascadores, correas y placas.', 8)
+on conflict (name) do nothing;
+
+insert into public.suggested_queries (question, category, sort_order, is_active) values
+  ('¿Qué cuidados básicos necesita un cachorro?', 'Cuidados Veterinarios', 1, true),
+  ('¿Qué establecimientos ofrecen peluquería canina?', 'Catálogo y Servicios', 2, true),
+  ('¿Qué accesorios necesita un gato?', 'Accesorios y Cuidado', 3, true)
+on conflict (question) do nothing;
 
 -- Carga inicial de 6 establecimientos reales de ejemplo (si la tabla está vacía)
 do $$

@@ -14,13 +14,15 @@ import {
   checkSupabaseHealth,
   createEstablishment,
   deleteEstablishment,
+  getCatalogMetadata,
   getEstablishmentById,
   isSupabaseConfigured,
+  listChatMessages,
   listEstablishments,
+  saveChatTurn,
   updateEstablishment,
 } from './src/server/db.ts';
 import {
-  ESTABLISHMENT_CATEGORIES,
   type Establishment,
   type EstablishmentCategory,
   type EstablishmentInput,
@@ -49,9 +51,9 @@ function validateEstablishmentInput(
   if (name.length < 2 || name.length > 140) {
     return { error: 'El nombre del establecimiento debe tener entre 2 y 140 caracteres.' };
   }
-  if (!ESTABLISHMENT_CATEGORIES.includes(category as EstablishmentCategory)) {
+  if (category.length < 2 || category.length > 80) {
     return {
-      error: `La categoría debe ser una de: ${ESTABLISHMENT_CATEGORIES.join(', ')}.`,
+      error: 'La categoría del establecimiento debe tener entre 2 y 80 caracteres.',
     };
   }
   if (address.length < 4 || address.length > 240) {
@@ -183,17 +185,45 @@ async function startServer() {
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', async (_req: Request, res: Response) => {
-    const supabaseStatus = isSupabaseConfigured()
-      ? await checkSupabaseHealth()
-      : { configured: false, ok: false };
+    res.setHeader('Cache-Control', 'no-store');
+    const supabaseStatus = await checkSupabaseHealth();
 
     res.json({
       ok: true,
       storage: isSupabaseConfigured() ? 'supabase' : 'local',
       supabaseOk: supabaseStatus.ok,
       supabaseDetail: supabaseStatus.detail ?? null,
+      missingTables: supabaseStatus.missingTables ?? [],
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
     });
+  });
+
+  app.get('/api/catalog-meta', async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const metadata = await getCatalogMetadata();
+      res.json(metadata);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Error al cargar catálogos de Supabase.';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.get('/api/chat/history', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const sessionId =
+        typeof req.query.sessionId === 'string' && req.query.sessionId.trim()
+          ? req.query.sessionId.trim()
+          : 'default';
+      const messages = await listChatMessages(sessionId);
+      res.json({ messages });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Error al obtener historial del asistente.';
+      res.status(500).json({ error: message });
+    }
   });
 
   app.get('/api/public-config', (_req: Request, res: Response) => {
@@ -206,6 +236,7 @@ async function startServer() {
   });
 
   app.get('/api/establishments', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
     try {
       const q = typeof req.query.q === 'string' ? req.query.q : undefined;
       const category =
@@ -232,6 +263,7 @@ async function startServer() {
   });
 
   app.get('/api/establishments/:id', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
     try {
       const id = String(req.params.id || '').trim();
       if (!id) {
@@ -328,10 +360,15 @@ async function startServer() {
 
     const body = req.body as {
       message?: unknown;
+      sessionId?: unknown;
       history?: Array<{ role?: string; content?: string }>;
     };
     const userMessage =
       typeof body?.message === 'string' ? body.message.trim() : '';
+    const sessionId =
+      typeof body?.sessionId === 'string' && body.sessionId.trim()
+        ? body.sessionId.trim()
+        : 'default';
 
     if (!userMessage) {
       res.status(400).json({ error: 'Escribí una consulta antes de enviar.' });
@@ -511,6 +548,18 @@ Reglas de comportamiento:
           category: est.category,
           address: est.address,
         }));
+
+      try {
+        await saveChatTurn(sessionId, 'user', userMessage);
+        await saveChatTurn(
+          sessionId,
+          'assistant',
+          replyText,
+          referencedEstablishments
+        );
+      } catch {
+        // No bloquear la respuesta al usuario si la tabla chat_messages aún no fue creada
+      }
 
       res.json({
         reply: replyText,
