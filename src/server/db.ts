@@ -26,6 +26,7 @@ const LOCAL_STORE_PATH = path.join(DATA_DIR, 'petcare-store.json');
 const LOCAL_CHAT_PATH = path.join(DATA_DIR, 'petcare-chat.json');
 
 let supabaseClient: SupabaseClient | null = null;
+let activeSupabaseConfig: { url: string; key: string; envName: string } | null = null;
 let supabaseSeeded = false;
 
 let supabaseConfigWarning: string | null = null;
@@ -35,7 +36,7 @@ function cleanEnvValue(raw: string | undefined): string {
   return raw.trim().replace(/^["']|["']$/g, '').trim();
 }
 
-function pickSupabaseKey(): { key: string; envName: string } | null {
+function getAllSupabaseKeyCandidates(): Array<{ key: string; envName: string }> {
   const candidates: Array<[string, string | undefined]> = [
     ['SUPABASE_SERVICE_ROLE_KEY', process.env.SUPABASE_SERVICE_ROLE_KEY],
     ['SUPABASE_SECRET_KEY', process.env.SUPABASE_SECRET_KEY],
@@ -55,16 +56,15 @@ function pickSupabaseKey(): { key: string; envName: string } | null {
         !/^(MY_|TU_|YOUR_|PLACEHOLDER|EXAMPLE)/i.test(item.key)
     );
 
-  if (cleaned.length === 0) return null;
-
-  // Preferir claves reales de proyecto (JWT eyJ... o claves nuevas sb_secret_/sb_publishable_)
-  const validShape = cleaned.find(
+  // Ordenar primero claves con formato válido de proyecto (eyJ..., sb_secret_..., sb_publishable_...)
+  const preferred = cleaned.filter(
     (item) =>
       item.key.startsWith('eyJ') ||
       item.key.startsWith('sb_secret_') ||
       item.key.startsWith('sb_publishable_')
   );
-  return validShape ?? cleaned[0];
+  const rest = cleaned.filter((item) => !preferred.includes(item));
+  return [...preferred, ...rest];
 }
 
 function diagnoseKeyAgainstUrl(url: string, key: string, envName: string): string | null {
@@ -74,6 +74,14 @@ function diagnoseKeyAgainstUrl(url: string, key: string, envName: string): strin
 
   if (key.startsWith('postgresql://') || key.startsWith('postgres://')) {
     return `${envName} contiene una cadena de conexión PostgreSQL, no una clave API. Copiá 'service_role' o 'anon' desde Project Settings → API Keys.`;
+  }
+
+  if (
+    !key.startsWith('eyJ') &&
+    !key.startsWith('sb_secret_') &&
+    !key.startsWith('sb_publishable_')
+  ) {
+    return `${envName} no tiene formato de clave API de Supabase (debe comenzar con 'eyJ...', 'sb_secret_...' o 'sb_publishable_...'). Verificá no haber copiado la contraseña de la base de datos ni el JWT Secret; copiala en Project Settings → API Keys.`;
   }
 
   if (key.startsWith('eyJ') && key.split('.').length === 3) {
@@ -92,26 +100,21 @@ function diagnoseKeyAgainstUrl(url: string, key: string, envName: string): strin
   return null;
 }
 
-function getSupabaseConfig(): { url: string; key: string; envName: string } | null {
+function getNormalizedSupabaseUrl(): string | null {
   supabaseConfigWarning = null;
   let url =
     cleanEnvValue(process.env.SUPABASE_URL) ||
     cleanEnvValue(process.env.VITE_SUPABASE_URL) ||
     cleanEnvValue(process.env.NEXT_PUBLIC_SUPABASE_URL);
-  const pickedKey = pickSupabaseKey();
 
-  if (!url || !pickedKey) {
-    return null;
-  }
+  if (!url) return null;
 
-  // Ignorar placeholders comunes como MY_SUPABASE_URL o TU_URL
   if (/^(MY_|TU_|YOUR_|PLACEHOLDER)/i.test(url)) {
     supabaseConfigWarning =
       'SUPABASE_URL aún tiene un valor de ejemplo; usando almacenamiento local temporal.';
     return null;
   }
 
-  // Si alguien pegó la URL del dashboard por error, convertir al endpoint API real
   const dashboardMatch = url.match(
     /^https?:\/\/supabase\.com\/dashboard\/project\/([a-z0-9]+)/i
   );
@@ -135,13 +138,32 @@ function getSupabaseConfig(): { url: string; key: string; envName: string } | nu
         'SUPABASE_URL no es una URL válida (ej. https://tu-proyecto.supabase.co); usando almacenamiento local temporal.';
       return null;
     }
+    return `${parsed.protocol}//${parsed.host}`;
   } catch {
     supabaseConfigWarning =
       'SUPABASE_URL no tiene formato de URL válido (ej. https://tu-proyecto.supabase.co); usando almacenamiento local temporal.';
     return null;
   }
+}
 
-  return { url, key: pickedKey.key, envName: pickedKey.envName };
+function getSupabaseConfig(): { url: string; key: string; envName: string } | null {
+  if (activeSupabaseConfig) return activeSupabaseConfig;
+  const url = getNormalizedSupabaseUrl();
+  if (!url) return null;
+  const candidates = getAllSupabaseKeyCandidates();
+  if (candidates.length === 0) return null;
+  return { url, key: candidates[0].key, envName: candidates[0].envName };
+}
+
+function isAuthError(error: { message?: string; code?: string; details?: string } | null | undefined): boolean {
+  if (!error) return false;
+  const combined = `${error.code ?? ''} ${error.message ?? ''} ${error.details ?? ''}`.toLowerCase();
+  return (
+    combined.includes('invalid api key') ||
+    combined.includes('jwt') ||
+    combined.includes('401') ||
+    combined.includes('unauthorized')
+  );
 }
 
 function formatSupabaseError(
@@ -171,12 +193,7 @@ function formatSupabaseError(
     return `${context}: faltan las tablas 'establishments' y 'services' en Supabase. Ejecutá el SQL en Supabase → SQL Editor.`;
   }
 
-  if (
-    combined.includes('invalid api key') ||
-    combined.includes('jwt') ||
-    combined.includes('401') ||
-    combined.includes('unauthorized')
-  ) {
+  if (isAuthError(error)) {
     const envName = config?.envName ?? 'SUPABASE_SERVICE_ROLE_KEY';
     const rawDetail = [code, msg].filter(Boolean).join(' - ');
     return `${context}: la clave ${envName} fue rechazada por Supabase (${rawDetail || 'Invalid API key'}). Copiá la clave 'service_role' o 'anon' desde Supabase → Project Settings → API Keys.`;
@@ -196,25 +213,60 @@ function formatSupabaseError(
     : `${context}: verificá SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY y que hayas ejecutado el script SQL.`;
 }
 
-function getSupabase(): SupabaseClient | null {
-  const config = getSupabaseConfig();
-  if (!config) return null;
+async function resolveWorkingSupabase(): Promise<SupabaseClient | null> {
+  if (supabaseClient) return supabaseClient;
 
-  if (!supabaseClient) {
+  const url = getNormalizedSupabaseUrl();
+  if (!url) return null;
+
+  const candidates = getAllSupabaseKeyCandidates();
+  if (candidates.length === 0) return null;
+
+  let lastAuthError: { message?: string; code?: string; details?: string } | null = null;
+  let lastBadConfig: { url: string; key: string; envName: string } | null = null;
+
+  for (const candidate of candidates) {
+    const preCheckError = diagnoseKeyAgainstUrl(url, candidate.key, candidate.envName);
+    if (preCheckError && candidates.length > 1) {
+      lastBadConfig = { url, key: candidate.key, envName: candidate.envName };
+      continue;
+    }
+
     try {
-      supabaseClient = createClient(config.url, config.key, {
+      const client = createClient(url, candidate.key, {
         auth: {
           persistSession: false,
           autoRefreshToken: false,
         },
       });
+
+      const { error } = await client.from('establishments').select('id').limit(1);
+      if (error && isAuthError(error)) {
+        lastAuthError = error;
+        lastBadConfig = { url, key: candidate.key, envName: candidate.envName };
+        continue;
+      }
+
+      activeSupabaseConfig = { url, key: candidate.key, envName: candidate.envName };
+      supabaseClient = client;
+      return client;
     } catch (err) {
       supabaseConfigWarning =
         err instanceof Error ? err.message : 'No se pudo inicializar el cliente de Supabase.';
-      return null;
     }
   }
-  return supabaseClient;
+
+  if (lastBadConfig) {
+    activeSupabaseConfig = lastBadConfig;
+    throw new Error(
+      formatSupabaseError(
+        'Error al consultar Supabase',
+        lastAuthError ?? { message: 'Invalid API key' }
+      )
+    );
+  }
+
+  return null;
 }
 
 export function isSupabaseConfigured(): boolean {
@@ -248,7 +300,7 @@ export async function checkSupabaseHealth(): Promise<{
     };
   }
   try {
-    const client = getSupabase();
+    const client = await resolveWorkingSupabase();
     if (!client) {
       return {
         configured: false,
@@ -620,7 +672,7 @@ export function filterEstablishmentsList(
 export async function listEstablishments(
   filters?: EstablishmentFilters
 ): Promise<Establishment[]> {
-  const client = getSupabase();
+  const client = await resolveWorkingSupabase();
 
   if (client) {
     await ensureSupabaseSeeded(client);
@@ -684,7 +736,7 @@ export async function listEstablishments(
 export async function getEstablishmentById(
   id: string
 ): Promise<Establishment | null> {
-  const client = getSupabase();
+  const client = await resolveWorkingSupabase();
 
   if (client) {
     await ensureSupabaseSeeded(client);
@@ -732,7 +784,7 @@ export async function getEstablishmentById(
 export async function createEstablishment(
   input: EstablishmentInput
 ): Promise<Establishment> {
-  const client = getSupabase();
+  const client = await resolveWorkingSupabase();
 
   if (client) {
     await ensureSupabaseSeeded(client);
@@ -823,7 +875,7 @@ export async function updateEstablishment(
   id: string,
   input: EstablishmentInput
 ): Promise<Establishment | null> {
-  const client = getSupabase();
+  const client = await resolveWorkingSupabase();
 
   if (client) {
     await ensureSupabaseSeeded(client);
@@ -922,7 +974,7 @@ export async function updateEstablishment(
 }
 
 export async function deleteEstablishment(id: string): Promise<boolean> {
-  const client = getSupabase();
+  const client = await resolveWorkingSupabase();
 
   if (client) {
     await ensureSupabaseSeeded(client);
@@ -987,7 +1039,7 @@ const DEFAULT_SUGGESTED_QUERY_ITEMS: SuggestedQueryItem[] =
   }));
 
 export async function getCatalogMetadata(): Promise<CatalogMetadata> {
-  const client = getSupabase();
+  const client = await resolveWorkingSupabase();
   if (!client) {
     return {
       establishmentCategories: DEFAULT_ESTABLISHMENT_CATEGORIES,
@@ -1174,7 +1226,7 @@ function writeLocalChatStore(store: Record<string, ChatTurn[]>): void {
 
 export async function listChatMessages(sessionId: string): Promise<ChatTurn[]> {
   const safeSession = sessionId.trim() || 'default';
-  const client = getSupabase();
+  const client = await resolveWorkingSupabase();
 
   if (client) {
     const { data, error } = await client
@@ -1214,7 +1266,7 @@ export async function saveChatTurn(
   referencedEstablishments: ReferencedEstablishmentSummary[] = []
 ): Promise<void> {
   const safeSession = sessionId.trim() || 'default';
-  const client = getSupabase();
+  const client = await resolveWorkingSupabase();
 
   if (client) {
     const { error } = await client.from('chat_messages').insert({
